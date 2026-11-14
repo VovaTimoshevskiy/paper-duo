@@ -1,0 +1,569 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>Paper Duo — Paper.io на двоих</title>
+<script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+<style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{height:100%;background:#22242f;color:#f2f2f2;font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;overflow:hidden;touch-action:none;user-select:none;-webkit-user-select:none}
+  button{font:inherit;cursor:pointer;border:0;border-radius:12px;padding:12px 20px;font-weight:700;font-size:16px;background:#4f8cff;color:#fff}
+  button:hover{filter:brightness(1.08)}
+  button:disabled{opacity:.5;cursor:default}
+  button.ghost{background:#3a3d4d}
+  #lobby{height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;padding:20px;text-align:center}
+  #lobby h1{font-size:44px;letter-spacing:1px}
+  #lobby h1 span{color:#ff6fae}
+  .sub{opacity:.7;margin-top:-8px}
+  .or{opacity:.5;font-size:14px}
+  .join{display:flex;gap:8px}
+  #codeIn{width:130px;text-align:center;font-size:22px;font-weight:800;letter-spacing:4px;text-transform:uppercase;border-radius:12px;border:2px solid #3a3d4d;background:#2c2f3d;color:#fff;padding:8px;user-select:text;-webkit-user-select:text}
+  #status{min-height:22px;color:#ffcf6b;max-width:420px}
+  #roomBox{display:none;flex-direction:column;align-items:center;gap:10px;background:#2c2f3d;padding:18px 22px;border-radius:16px}
+  #roomCode{font-size:42px;font-weight:900;letter-spacing:8px;color:#7cb7ff}
+  #roomLink{font-size:12px;opacity:.6;word-break:break-all;max-width:320px;user-select:text;-webkit-user-select:text}
+  .help{opacity:.55;font-size:13px;max-width:400px;line-height:1.5}
+  #game{height:100%;display:none;flex-direction:column;align-items:center;padding:8px;gap:8px}
+  #hud{width:100%;max-width:1100px;display:flex;align-items:center;justify-content:space-between;gap:10px;font-weight:700}
+  .side{display:flex;flex-direction:column;gap:2px;min-width:90px}
+  .side.right{text-align:right}
+  .side small{opacity:.8;font-weight:600}
+  .pct{font-size:20px}
+  #center{text-align:center}
+  #score{font-size:26px;font-weight:900}
+  #timer{opacity:.75;font-size:14px}
+  #wrap{position:relative}
+  canvas{display:block;border-radius:8px;box-shadow:0 6px 30px rgba(0,0,0,.4);cursor:crosshair}
+  #overlay{position:absolute;inset:0;display:none;flex-direction:column;align-items:center;justify-content:center;gap:10px;background:rgba(20,22,30,.5);border-radius:8px;text-align:center;padding:16px;pointer-events:none}
+  #overlay button{pointer-events:auto}
+  #ovTitle{font-size:46px;font-weight:900;text-shadow:0 3px 12px rgba(0,0,0,.5)}
+  #ovSub{font-size:18px;opacity:.9}
+</style>
+</head>
+<body>
+
+<div id="lobby">
+  <h1>Paper <span>Duo</span></h1>
+  <p class="sub">Paper.io на двоих по сети</p>
+
+  <button id="btnHost">Создать комнату</button>
+
+  <div id="roomBox">
+    <div>Код комнаты:</div>
+    <div id="roomCode">····</div>
+    <button id="btnCopy" class="ghost">Скопировать ссылку</button>
+    <div id="roomLink"></div>
+    <div style="opacity:.7;font-size:14px">Ждём второго игрока…</div>
+  </div>
+
+  <div class="or">или</div>
+  <div class="join">
+    <input id="codeIn" maxlength="4" placeholder="КОД" autocomplete="off" spellcheck="false">
+    <button id="btnJoin">Войти</button>
+  </div>
+
+  <div id="status"></div>
+  <div class="help">
+    Управление: мышь (персонаж поворачивает к курсору), стрелки или WASD, на телефоне — веди пальцем как джойстиком.<br>
+    Выходишь со своей территории — тянется хвост. Вернулся — всё, что обвёл, стало твоим.
+    Перережь хвост соперника и не наезжай на свой.
+  </div>
+</div>
+
+<div id="game">
+  <div id="hud">
+    <div class="side"><small id="meName">Ты</small><span class="pct" id="mePct">0%</span></div>
+    <div id="center"><div id="score">0 : 0</div><div id="timer">2:00</div></div>
+    <div class="side right"><small id="opName">Соперник</small><span class="pct" id="opPct">0%</span></div>
+  </div>
+  <div id="wrap">
+    <canvas id="cv"></canvas>
+    <div id="overlay"><div id="ovTitle"></div><div id="ovSub"></div><button id="ovBtn" class="ghost" style="display:none">В меню</button></div>
+  </div>
+</div>
+
+<script>
+// ================== НАСТРОЙКИ ==================
+const GW = 240, GH = 150;     // размер поля (внутренняя сетка территории)
+const TICK = 33;              // мс на шаг симуляции (~30 раз в секунду)
+const SPEED = 30;             // скорость, клеток в секунду
+const TURN = 5;               // скорость поворота, радиан в секунду
+const ROUND_TIME = 120;       // длительность раунда, сек
+const WIN_PCT = 50;           // захватил столько % карты — мгновенная победа в раунде
+const SPAWN_R = 9;            // радиус стартовой территории
+const HEAD_R = 2.2;           // размер головы (визуально)
+const HEADON = 3;             // расстояние лобового столкновения
+const GRACE = 6;              // свой хвост «безопасен» столько шагов после прохода
+
+// Если не соединяется (часто на мобильном интернете / CGNAT) —
+// заведи бесплатный TURN (metered.ca или expressturn.com) и раскомментируй строку.
+const ICE_SERVERS = [
+  { urls: 'stun:stun.l.google.com:19302' },
+  { urls: 'stun:stun1.l.google.com:19302' },
+  // { urls: 'turn:АДРЕС_TURN:3478', username: 'ЛОГИН', credential: 'ПАРОЛЬ' },
+];
+const PREFIX = 'paperduo-v2-';
+// ===============================================
+
+const N = GW * GH, DT = TICK / 1000;
+const COLORS = [
+  { name: 'Синий',   dat: 'Синему',   own: [124, 183, 255], dark: [62, 124, 210],  trail: 'rgba(46,134,255,.55)', head: '#1f5fd0', css: '#7cb7ff' },
+  { name: 'Розовый', dat: 'Розовому', own: [255, 156, 200], dark: [214, 96, 152],  trail: 'rgba(255,64,150,.55)', head: '#d02a78', css: '#ff9cc8' },
+];
+const $ = id => document.getElementById(id);
+const clamp = (v, a, b) => v < a ? a : v > b ? b : v;
+const angDiff = (t, a) => { let d = t - a; while (d > Math.PI) d -= 2 * Math.PI; while (d < -Math.PI) d += 2 * Math.PI; return d; };
+const cellOf = (x, y) => clamp(Math.floor(y), 0, GH - 1) * GW + clamp(Math.floor(x), 0, GW - 1);
+
+function errText(t) {
+  if (t === 'browser-incompatible') return 'Этот браузер не поддерживает WebRTC. Открой игру в обычном Chrome, Firefox или Safari, а не во встроенном просмотрщике (Claude, Telegram и т.п.).';
+  if (t === 'peer-unavailable') return 'Комната не найдена — проверь код';
+  if (t === 'network' || t === 'server-error' || t === 'socket-error') return 'Нет связи с сервером PeerJS — проверь интернет';
+  return 'Ошибка: ' + t;
+}
+
+// ---------- Сеть ----------
+let peer = null, conn = null, isHost = false, myIdx = 0, started = false, loopId = null;
+
+function setStatus(t) { $('status').textContent = t; }
+function lockLobby(v) { $('btnHost').disabled = v; $('btnJoin').disabled = v; $('codeIn').disabled = v; }
+function makeCode() {
+  const A = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  let s = ''; for (let i = 0; i < 4; i++) s += A[Math.floor(Math.random() * A.length)];
+  return s;
+}
+function resetPeer() { try { peer && peer.destroy(); } catch (e) {} peer = null; conn = null; }
+
+function startHost(code) {
+  lockLobby(true); setStatus('Создаю комнату…');
+  peer = new Peer(PREFIX + code, { config: { iceServers: ICE_SERVERS } });
+  peer.on('open', () => {
+    setStatus('');
+    const link = location.origin + location.pathname + '?room=' + code;
+    $('roomCode').textContent = code;
+    $('roomLink').textContent = link;
+    $('btnCopy').onclick = () => {
+      (navigator.clipboard ? navigator.clipboard.writeText(link) : Promise.reject())
+        .then(() => setStatus('Ссылка скопирована — отправь её второму игроку'))
+        .catch(() => setStatus('Скопируй ссылку вручную: ' + link));
+    };
+    $('roomBox').style.display = 'flex';
+  });
+  peer.on('connection', c => {
+    if (conn) { c.close(); return; }
+    conn = c;
+    c.on('open', () => { isHost = true; myIdx = 0; setupConn(); startGame(); });
+  });
+  peer.on('error', e => {
+    if (e.type === 'unavailable-id') { resetPeer(); startHost(makeCode()); return; }
+    if (started) return;
+    setStatus(errText(e.type)); resetPeer(); lockLobby(false); $('roomBox').style.display = 'none';
+  });
+}
+
+function joinRoom(code) {
+  code = (code || '').trim().toUpperCase();
+  if (code.length !== 4) { setStatus('Введи 4-значный код комнаты'); return; }
+  lockLobby(true); setStatus('Подключаюсь…');
+  peer = new Peer({ config: { iceServers: ICE_SERVERS } });
+  peer.on('open', () => {
+    const c = peer.connect(PREFIX + code, { reliable: true, serialization: 'json' });
+    conn = c;
+    const to = setTimeout(() => {
+      if (started) return;
+      setStatus('Не получилось соединиться. Проверь код. Если вы на мобильном интернете — нужен TURN-сервер (см. настройки в коде).');
+      resetPeer(); lockLobby(false);
+    }, 15000);
+    c.on('open', () => { clearTimeout(to); isHost = false; myIdx = 1; setupConn(); startGame(); });
+  });
+  peer.on('error', e => {
+    if (started) return;
+    setStatus(errText(e.type)); resetPeer(); lockLobby(false);
+  });
+}
+
+function setupConn() {
+  conn.on('data', onData);
+  conn.on('close', onDisconnect);
+  conn.on('error', onDisconnect);
+}
+function onDisconnect() {
+  if (loopId) { clearInterval(loopId); loopId = null; }
+  showOverlay('Связь потеряна', 'Соперник отключился', true);
+}
+function onData(m) {
+  if (!m || typeof m !== 'object') return;
+  if (isHost) {
+    if (m.t === 'a' && (m.a === null || (typeof m.a === 'number' && isFinite(m.a)))) G.targets[1] = m.a;
+  } else if (m.t === 's') {
+    apply(m);
+  }
+}
+
+// ---------- Игра (считает только хост) ----------
+let G = null;
+
+function newRound() {
+  const old = G.p;
+  G.own = new Uint8Array(N); G.trail = new Uint8Array(N); G.stamp = new Int32Array(N); G.tick = 0;
+  const sp = [[GW * 0.25, GH / 2, -Math.PI / 2], [GW * 0.75, GH / 2, Math.PI / 2]];
+  G.p = sp.map(([x, y, a], i) => {
+    for (let cy = -SPAWN_R; cy <= SPAWN_R; cy++) for (let cx = -SPAWN_R; cx <= SPAWN_R; cx++)
+      if (cx * cx + cy * cy <= SPAWN_R * SPAWN_R) G.own[(Math.floor(y) + cy) * GW + Math.floor(x) + cx] = i + 1;
+    return { x, y, a, trailOn: false, pts: [], tid: old ? old[i].tid + 1 : 1, sent: 0 };
+  });
+  G.gv = (G.gv || 0) + 1;
+  G.phase = 'count'; G.phaseT = performance.now() + 3000;
+  G.timeLeft = ROUND_TIME; G.winner = -1; G.reason = '';
+  calcPct();
+}
+
+function calcPct() {
+  let a = 0, b = 0;
+  for (let k = 0; k < N; k++) { if (G.own[k] === 1) a++; else if (G.own[k] === 2) b++; }
+  G.pct = [a, b].map(v => Math.round(v * 1000 / N) / 10);
+}
+
+function finish(w, reason) {
+  if (w >= 0) G.score[w]++;
+  G.winner = w; G.reason = reason;
+  G.phase = 'over'; G.phaseT = performance.now() + 2800;
+}
+
+// клетка k или её соседи заняты хвостом игрока v
+function nearTrail(k, v) {
+  const tr = G.trail, x = k % GW;
+  return tr[k] === v || (x > 0 && tr[k - 1] === v) || (x < GW - 1 && tr[k + 1] === v) ||
+         (k >= GW && tr[k - GW] === v) || (k < N - GW && tr[k + GW] === v);
+}
+
+function step() {
+  G.tick++;
+  const P = G.p, own = G.own, tr = G.trail, st = G.stamp;
+  const samples = [[], []];
+
+  // 1. движение
+  for (let i = 0; i < 2; i++) {
+    const p = P[i], t = G.targets[i];
+    if (t !== null && t !== undefined) { const m = TURN * DT; p.a += clamp(angDiff(t, p.a), -m, m); }
+    p.ox = p.x; p.oy = p.y;
+    p.nx = clamp(p.x + Math.cos(p.a) * SPEED * DT, 1, GW - 1);
+    p.ny = clamp(p.y + Math.sin(p.a) * SPEED * DT, 1, GH - 1);
+    const n = Math.max(1, Math.ceil(Math.hypot(p.nx - p.x, p.ny - p.y) / 0.4));
+    for (let s = 1; s <= n; s++) samples[i].push(cellOf(p.x + (p.nx - p.x) * s / n, p.y + (p.ny - p.y) * s / n));
+  }
+
+  // 2. столкновения
+  const dead = [false, false], why = ['', ''];
+  if (Math.hypot(P[0].nx - P[1].nx, P[0].ny - P[1].ny) < HEADON) {
+    const home = [0, 1].map(i => own[cellOf(P[i].nx, P[i].ny)] === i + 1);
+    if (home[0] !== home[1]) { const l = home[0] ? 1 : 0; dead[l] = true; why[l] = `${COLORS[l].name} проиграл лобовое столкновение`; }
+    else { dead[0] = dead[1] = true; why[0] = why[1] = 'Лобовое столкновение'; }
+  }
+  for (let i = 0; i < 2; i++) {
+    const j = 1 - i;
+    for (const k of samples[i]) {
+      if (tr[k] === i + 1 && st[k] < G.tick - GRACE) { dead[i] = true; why[i] = `${COLORS[i].name} наехал на свой хвост`; break; }
+      if (nearTrail(k, j + 1)) { dead[j] = true; why[j] = `${COLORS[j].dat} перерезали хвост`; break; }
+    }
+  }
+  if (dead[0] || dead[1]) {
+    if (dead[0] && dead[1]) finish(-1, [...new Set(why)].join('; '));
+    else { const l = dead[0] ? 0 : 1; finish(1 - l, why[l]); }
+    return;
+  }
+
+  // 3. хвосты и захват
+  for (let i = 0; i < 2; i++) { P[i].x = P[i].nx; P[i].y = P[i].ny; }
+  for (let i = 0; i < 2; i++) {
+    const p = P[i], me = i + 1;
+    for (const k of samples[i]) {
+      if (own[k] === me) {
+        if (p.trailOn) {
+          p.trailOn = false;
+          const r = capture(i);
+          p.pts = []; p.tid++; p.sent = 0;
+          if (r) { finish(i, r); return; }
+        }
+      } else {
+        if (!p.trailOn) { p.trailOn = true; p.pts.push(r1(p.ox), r1(p.oy)); }
+        if (tr[k] !== me) { tr[k] = me; st[k] = G.tick; }
+      }
+    }
+    if (p.trailOn) p.pts.push(r1(p.x), r1(p.y));
+  }
+
+  for (let i = 0; i < 2; i++) if (G.pct[i] >= WIN_PCT) { finish(i, `${COLORS[i].name} захватил ${WIN_PCT}% карты`); return; }
+}
+
+// Игрок вернулся домой: хвост и всё, что он обвёл, становится его территорией.
+function capture(i) {
+  const me = i + 1, j = 1 - i, own = G.own, tr = G.trail;
+  for (let k = 0; k < N; k++) if (tr[k] === me) { own[k] = me; tr[k] = 0; }
+
+  const seen = new Uint8Array(N), stack = [];
+  const add = k => { if (!seen[k] && own[k] !== me) { seen[k] = 1; stack.push(k); } };
+  for (let x = 0; x < GW; x++) { add(x); add((GH - 1) * GW + x); }
+  for (let y = 0; y < GH; y++) { add(y * GW); add(y * GW + GW - 1); }
+  while (stack.length) {
+    const k = stack.pop(), x = k % GW;
+    if (x > 0) add(k - 1); if (x < GW - 1) add(k + 1);
+    if (k >= GW) add(k - GW); if (k < N - GW) add(k + GW);
+  }
+
+  const e = G.p[j], ek = cellOf(e.x, e.y);
+  const enemyInside = own[ek] !== me && !seen[ek];
+  for (let k = 0; k < N; k++) if (!seen[k] && own[k] !== me) own[k] = me;
+  G.gv++;
+  calcPct();
+
+  if (enemyInside) return `${COLORS[j].name} окружён`;
+  for (let k = 0; k < N; k++) if (own[k] === j + 1) return '';
+  return `${COLORS[j].name} лишился всей территории`;
+}
+
+function hostTick() {
+  const now = performance.now();
+  if (G.phase === 'count') {
+    if (now >= G.phaseT) { G.phase = 'play'; G.roundStart = now; }
+  } else if (G.phase === 'play') {
+    step();
+    if (G.phase === 'play') {
+      G.timeLeft = Math.max(0, ROUND_TIME - (now - G.roundStart) / 1000);
+      if (G.timeLeft <= 0) {
+        const [a, b] = G.pct;
+        if (a === b) finish(-1, 'Время вышло — территории поровну');
+        else { const w = a > b ? 0 : 1; finish(w, `Время вышло — у ${w ? 'Розового' : 'Синего'} больше территории`); }
+      }
+    }
+  } else if (G.phase === 'over') {
+    if (now >= G.phaseT) newRound();
+  }
+  const s = snapshot(now);
+  try { conn.send(s); } catch (e) {}
+  apply(s);
+}
+
+function r1(v) { return Math.round(v * 10) / 10; }
+function rle(a) {
+  const out = []; let v = a[0], n = 1;
+  for (let k = 1; k < a.length; k++) { if (a[k] === v) n++; else { out.push(v, n); v = a[k]; n = 1; } }
+  out.push(v, n); return out;
+}
+function snapshot(now) {
+  const S = {
+    t: 's', ph: G.phase, sc: G.score, w: G.winner, r: G.reason, pct: G.pct,
+    cd: G.phase === 'count' ? Math.max(1, Math.ceil((G.phaseT - now) / 1000)) : 0,
+    tl: Math.ceil(G.timeLeft),
+    p: G.p.map(p => { const from = p.sent, add = p.pts.slice(from); p.sent = p.pts.length; return [r1(p.x), r1(p.y), Math.round(p.a * 100) / 100, p.tid, from, add]; }),
+  };
+  if (G.gv !== G.gvSent) { S.g = rle(G.own); G.gvSent = G.gv; }
+  return S;
+}
+
+// ---------- Отображение (у обоих игроков) ----------
+const cv = $('cv'), ctx = cv.getContext('2d');
+const terr = document.createElement('canvas'); terr.width = GW; terr.height = GH;
+const terrDark = document.createElement('canvas'); terrDark.width = GW; terrDark.height = GH;
+let scale = 5;
+const M = { own: new Uint8Array(N), tr: [{ tid: -1, pts: [] }, { tid: -1, pts: [] }], prev: null, cur: null, t: 0, S: null };
+
+function paintTerr() {
+  for (const [cnv, key] of [[terr, 'own'], [terrDark, 'dark']]) {
+    const c = cnv.getContext('2d'), img = c.createImageData(GW, GH), d = img.data;
+    for (let k = 0; k < N; k++) {
+      const o = M.own[k];
+      if (o) { const col = COLORS[o - 1][key]; d[k * 4] = col[0]; d[k * 4 + 1] = col[1]; d[k * 4 + 2] = col[2]; d[k * 4 + 3] = 255; }
+    }
+    c.putImageData(img, 0, 0);
+  }
+}
+
+function apply(S) {
+  const now = performance.now();
+  if (S.g) {
+    let k = 0;
+    for (let i = 0; i < S.g.length; i += 2) { M.own.fill(S.g[i], k, k + S.g[i + 1]); k += S.g[i + 1]; }
+    paintTerr();
+  }
+  S.p.forEach((q, i) => {
+    const T = M.tr[i];
+    if (q[3] !== T.tid) { T.tid = q[3]; T.pts = []; }
+    T.pts.length = Math.min(T.pts.length, q[4]);
+    for (const v of q[5]) T.pts.push(v);
+  });
+  const cur = S.p.map(q => ({ x: q[0], y: q[1], a: q[2] }));
+  const prev = M.cur ? M.cur.map((c, i) => Math.hypot(c.x - cur[i].x, c.y - cur[i].y) > 8 ? cur[i] : c) : cur;
+  M.prev = prev; M.cur = cur; M.t = now; M.S = S;
+  updateHud(S);
+}
+
+function updateHud(S) {
+  const op = 1 - myIdx;
+  $('meName').textContent = `Ты (${COLORS[myIdx].name.toLowerCase()})`;
+  $('meName').style.color = COLORS[myIdx].css;
+  $('opName').style.color = COLORS[op].css;
+  $('mePct').textContent = S.pct[myIdx] + '%';
+  $('opPct').textContent = S.pct[op] + '%';
+  $('score').textContent = `${S.sc[myIdx]} : ${S.sc[op]}`;
+  const tl = Math.max(0, S.tl);
+  $('timer').textContent = `${Math.floor(tl / 60)}:${String(tl % 60).padStart(2, '0')}`;
+  if (S.ph === 'count') showOverlay(String(S.cd), myIdx === 0 ? 'Ты синий' : 'Ты розовый');
+  else if (S.ph === 'over') showOverlay(S.w === -1 ? 'Ничья' : S.w === myIdx ? 'Победа! 🎉' : 'Поражение', S.r);
+  else hideOverlay();
+}
+
+function heads() {
+  if (!M.cur) return null;
+  const al = Math.min(1, (performance.now() - M.t) / TICK);
+  return M.cur.map((c, i) => {
+    const p = M.prev[i];
+    return { x: p.x + (c.x - p.x) * al, y: p.y + (c.y - p.y) * al, a: p.a + angDiff(c.a, p.a) * al };
+  });
+}
+
+function resize() {
+  const dpr = window.devicePixelRatio || 1;
+  const aw = window.innerWidth - 16, ah = window.innerHeight - $('hud').offsetHeight - 24;
+  scale = Math.max(1.5, Math.min(aw / GW, ah / GH));
+  cv.width = Math.round(GW * scale * dpr); cv.height = Math.round(GH * scale * dpr);
+  cv.style.width = GW * scale + 'px'; cv.style.height = GH * scale + 'px';
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+}
+window.addEventListener('resize', resize);
+
+function render() {
+  requestAnimationFrame(render);
+  const H = heads();
+  if (!H) return;
+  steer(H[myIdx]);
+  const s = scale, w = GW * s, h = GH * s;
+
+  ctx.fillStyle = '#f1ece2'; ctx.fillRect(0, 0, w, h);
+  ctx.strokeStyle = 'rgba(0,0,0,.045)'; ctx.lineWidth = 1;
+  ctx.beginPath();
+  for (let x = 0; x <= GW; x += 10) { ctx.moveTo(x * s, 0); ctx.lineTo(x * s, h); }
+  for (let y = 0; y <= GH; y += 10) { ctx.moveTo(0, y * s); ctx.lineTo(w, y * s); }
+  ctx.stroke();
+
+  ctx.imageSmoothingEnabled = true;
+  ctx.drawImage(terrDark, 0, s * 0.8, w, h);   // «бортик» под территорией
+  ctx.drawImage(terr, 0, 0, w, h);
+
+  ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+  M.tr.forEach((T, i) => {
+    if (T.pts.length < 2) return;
+    ctx.strokeStyle = COLORS[i].trail; ctx.lineWidth = 1.7 * s;
+    ctx.beginPath(); ctx.moveTo(T.pts[0] * s, T.pts[1] * s);
+    for (let k = 2; k < T.pts.length; k += 2) ctx.lineTo(T.pts[k] * s, T.pts[k + 1] * s);
+    ctx.lineTo(H[i].x * s, H[i].y * s);
+    ctx.stroke();
+  });
+
+  H.forEach((p, i) => {
+    const R = HEAD_R * s;
+    ctx.save();
+    ctx.translate(p.x * s, p.y * s);
+    ctx.fillStyle = 'rgba(0,0,0,.18)';
+    ctx.beginPath(); ctx.ellipse(0, R * 0.55, R * 1.05, R * 0.6, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.rotate(p.a);
+    ctx.fillStyle = COLORS[i].head;
+    ctx.strokeStyle = i === myIdx ? '#fff' : 'rgba(255,255,255,.45)';
+    ctx.lineWidth = Math.max(1.5, s * 0.35);
+    ctx.beginPath();
+    if (ctx.roundRect) ctx.roundRect(-R, -R, R * 2, R * 2, R * 0.45); else ctx.rect(-R, -R, R * 2, R * 2);
+    ctx.fill(); ctx.stroke();
+    ctx.fillStyle = '#fff';
+    for (const side of [-1, 1]) { ctx.beginPath(); ctx.arc(R * 0.35, side * R * 0.42, R * 0.24, 0, Math.PI * 2); ctx.fill(); }
+    ctx.fillStyle = '#222';
+    for (const side of [-1, 1]) { ctx.beginPath(); ctx.arc(R * 0.45, side * R * 0.42, R * 0.11, 0, Math.PI * 2); ctx.fill(); }
+    ctx.restore();
+  });
+}
+
+let finalOverlay = false;
+function showOverlay(title, sub, final) {
+  if (finalOverlay) return;
+  if (final) finalOverlay = true;
+  $('ovTitle').textContent = title; $('ovSub').textContent = sub || '';
+  $('ovBtn').style.display = final ? 'inline-block' : 'none';
+  $('overlay').style.display = 'flex';
+}
+function hideOverlay() { if (!finalOverlay) $('overlay').style.display = 'none'; }
+$('ovBtn').onclick = () => { location.href = location.pathname; };
+
+function startGame() {
+  started = true;
+  $('lobby').style.display = 'none';
+  $('game').style.display = 'flex';
+  resize();
+  requestAnimationFrame(render);
+  if (isHost) {
+    G = { score: [0, 0], targets: [null, null] };
+    newRound();
+    loopId = setInterval(hostTick, TICK);
+  } else {
+    showOverlay('…', 'Ждём хоста');
+  }
+}
+
+// ---------- Управление ----------
+const keys = new Set();
+let mode = 'mouse', mouse = null, joyA = null, joyO = null;
+let lastSent = undefined, lastSendT = 0;
+
+const KEYMAP = { ArrowUp: 'u', KeyW: 'u', ArrowDown: 'd', KeyS: 'd', ArrowLeft: 'l', KeyA: 'l', ArrowRight: 'r', KeyD: 'r' };
+window.addEventListener('keydown', e => { const k = KEYMAP[e.code]; if (!k || !started) return; e.preventDefault(); keys.add(k); mode = 'keys'; });
+window.addEventListener('keyup', e => { const k = KEYMAP[e.code]; if (k) keys.delete(k); });
+window.addEventListener('blur', () => keys.clear());
+cv.addEventListener('mousemove', e => { const r = cv.getBoundingClientRect(); mouse = { x: (e.clientX - r.left) / scale, y: (e.clientY - r.top) / scale }; mode = 'mouse'; });
+
+const gameEl = $('game');
+gameEl.addEventListener('touchstart', e => { const t = e.touches[0]; joyO = { x: t.clientX, y: t.clientY }; mode = 'touch'; }, { passive: true });
+gameEl.addEventListener('touchmove', e => {
+  if (!joyO) return;
+  const t = e.touches[0], dx = t.clientX - joyO.x, dy = t.clientY - joyO.y, d = Math.hypot(dx, dy);
+  if (d > 10) joyA = Math.atan2(dy, dx);
+  if (d > 60) { joyO.x = t.clientX - dx / d * 60; joyO.y = t.clientY - dy / d * 60; } // «плавающий» джойстик
+  e.preventDefault();
+}, { passive: false });
+gameEl.addEventListener('touchend', () => { joyO = null; });
+
+function desiredAngle(me) {
+  let vx = 0, vy = 0;
+  if (keys.has('u')) vy--; if (keys.has('d')) vy++; if (keys.has('l')) vx--; if (keys.has('r')) vx++;
+  if (vx || vy) return Math.atan2(vy, vx);
+  if (mode === 'touch') return joyA;
+  if (mode === 'mouse' && mouse && me) {
+    const dx = mouse.x - me.x, dy = mouse.y - me.y;
+    if (Math.hypot(dx, dy) > 1.5) return Math.atan2(dy, dx);
+    return lastSent === undefined ? null : lastSent;
+  }
+  return lastSent === undefined ? null : lastSent;
+}
+
+function steer(me) {
+  const a = desiredAngle(me), now = performance.now();
+  const changed = lastSent === undefined || (a === null) !== (lastSent === null) || (a !== null && Math.abs(angDiff(a, lastSent)) > 0.03);
+  if (!changed || now - lastSendT < 30) return;
+  lastSent = a; lastSendT = now;
+  if (isHost) G.targets[0] = a;
+  else { try { conn.send({ t: 'a', a: a === null ? null : Math.round(a * 1000) / 1000 }); } catch (e) {} }
+}
+
+// ---------- Лобби ----------
+$('btnHost').onclick = () => startHost(makeCode());
+$('btnJoin').onclick = () => joinRoom($('codeIn').value);
+$('codeIn').addEventListener('keydown', e => { if (e.key === 'Enter') joinRoom($('codeIn').value); });
+
+if (typeof Peer === 'undefined') {
+  setStatus('Не загрузилась библиотека PeerJS — проверь интернет');
+  lockLobby(true);
+} else {
+  const room = new URLSearchParams(location.search).get('room');
+  if (room) { $('codeIn').value = room.toUpperCase(); joinRoom(room); }
+}
+</script>
+</body>
+</html>
